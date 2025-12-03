@@ -1,0 +1,230 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from itertools import product
+
+# ===================================================================
+# SETTINGS
+# ===================================================================
+STARTING_BALANCE = 100_000
+symbols = ["GDX.AX", "GOLD.AX", "NAB.AX", "NDQ.AX"]
+interval = "1d"
+
+# Optimization parameter ranges
+imbalance_range = range(1, 35)          # 1–34
+ema_range = range(5, 161, 5)            # 5–160 step 5
+tp_range = [x / 100 for x in range(3, 41)]  # 3% → 40%
+
+
+# ===================================================================
+# COMMSEC BROKERAGE FEE MODEL
+# ===================================================================
+def commsec_fee(trade_value):
+    """Real CommSec brokerage fee model."""
+    if trade_value <= 1000:
+        return 5.00
+    elif trade_value <= 10000:
+        return 10.00
+    elif trade_value <= 25000:
+        return 19.95
+    else:
+        return trade_value * 0.0012   # 0.12%
+
+
+# ===================================================================
+# FETCH DATA
+# ===================================================================
+def fetch_data(symbol):
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=300)
+
+    df = yf.download(
+        symbol,
+        start=start_date,
+        end=end_date,
+        interval=interval,
+        auto_adjust=True,
+        progress=False
+    )
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    return df.tail(200)
+
+
+# ===================================================================
+# REALISTIC BACKTEST FUNCTION
+# ===================================================================
+def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
+
+    data = df.copy()
+
+    # Indicators
+    data["ema"] = data["Close"].ewm(span=ema_len).mean()
+    data["ema_up"] = data["ema"] > data["ema"].shift(1)
+    data["ema_down"] = data["ema"] < data["ema"].shift(1)
+    data["above_ema"] = data["Close"] > data["ema"]
+    data["below_ema"] = data["Close"] < data["ema"]
+
+    data["imb_low"] = data["Low"].rolling(imbalance_lookback).min()
+    data["imb_high"] = data["High"].rolling(imbalance_lookback).max()
+
+    data["year"] = data.index.year
+    data["tradable"] = data["year"] == 2025
+
+    balance = STARTING_BALANCE
+    position = 0
+    shares = 0
+    entry_price = None
+    tp_price = None
+
+    wins = 0
+    losses = 0
+    win_sizes = []
+
+    for i in range(imbalance_lookback + 2, len(data)):
+        row = data.iloc[i]
+
+        open_, high, low, close = row["Open"], row["High"], row["Low"], row["Close"]
+
+        # =============== ENTRY =====================
+        long_cond = (
+            low <= row["imb_low"] and
+            close > open_ and
+            row["ema_up"] and
+            row["above_ema"] and
+            row["tradable"] and
+            position == 0
+        )
+
+        if long_cond:
+            entry_price = close
+            shares = balance // entry_price
+            if shares <= 0:
+                continue
+
+            buy_value = entry_price * shares
+            buy_fee = commsec_fee(buy_value)
+
+            balance -= (buy_value + buy_fee)
+
+            tp_price = entry_price * (1 + take_profit_pct)
+            position = 1
+            continue
+
+        # =============== EXIT ======================
+        if position == 1:
+
+            # TP EXIT
+            if high >= tp_price:
+                exit_price = tp_price
+                sell_value = exit_price * shares
+                sell_fee = commsec_fee(sell_value)
+
+                balance += (sell_value - sell_fee)
+
+                pnl_pct = (exit_price - entry_price) / entry_price * 100
+                wins += 1
+                win_sizes.append(pnl_pct)
+
+                shares = 0
+                position = 0
+                entry_price = None
+                continue
+
+            # Opposite EXIT
+            short_cond = (
+                high >= row["imb_high"] and
+                close < open_ and
+                row["ema_down"] and
+                row["below_ema"] and
+                row["tradable"]
+            )
+
+            if short_cond:
+                exit_price = close
+                sell_value = exit_price * shares
+                sell_fee = commsec_fee(sell_value)
+
+                balance += (sell_value - sell_fee)
+
+                pnl_pct = (exit_price - entry_price) / entry_price * 100
+
+                if pnl_pct > 0:
+                    wins += 1
+                    win_sizes.append(pnl_pct)
+                else:
+                    losses += 1
+
+                shares = 0
+                position = 0
+                entry_price = None
+                continue
+
+    # Final results
+    pnl_value = balance - STARTING_BALANCE
+    pnl_pct = (pnl_value / STARTING_BALANCE) * 100
+    avg_win = np.mean(win_sizes) if win_sizes else 0
+
+    return pnl_pct, pnl_value, wins, losses, avg_win
+
+
+# ===================================================================
+# OPTIMIZE A SINGLE SYMBOL
+# ===================================================================
+def optimize_symbol(symbol):
+    df = fetch_data(symbol)
+    best = None
+
+    for imb, ema, tp in product(imbalance_range, ema_range, tp_range):
+
+        pnl_pct, pnl_value, wins, losses, avg_win = run_backtest(df, imb, ema, tp)
+
+        if best is None or pnl_pct > best["pnl_pct"]:
+            best = {
+                "symbol": symbol,
+                "imbalance": imb,
+                "ema": ema,
+                "tp_pct": tp,
+                "pnl_pct": pnl_pct,
+                "pnl_value": pnl_value,
+                "avg_win": avg_win,
+                "wins": wins,
+                "losses": losses,
+            }
+
+    return best
+
+
+# ===================================================================
+# RUN MULTI-SYMBOL OPTIMIZATION
+# ===================================================================
+results = []
+
+print("\nRunning realistic optimizer...\n")
+
+for sym in symbols:
+    print(f"Optimizing {sym} ...")
+    results.append(optimize_symbol(sym))
+
+df_results = pd.DataFrame(results).sort_values("pnl_pct", ascending=False)
+
+
+# ===================================================================
+# HUMAN READABLE FORMATTING
+# ===================================================================
+
+# Format percentages correctly
+df_results["tp_pct"]    = df_results["tp_pct"].map(lambda x: f"{x*100:.2f}%")
+df_results["pnl_pct"]   = df_results["pnl_pct"].map(lambda x: f"{x:.2f}%")
+df_results["avg_win"]   = df_results["avg_win"].map(lambda x: f"{x:.2f}%")
+
+# Format currency
+df_results["pnl_value"] = df_results["pnl_value"].map(lambda x: f"${x:,.2f}")
+
+print("\n==================== FINAL RESULTS ====================\n")
+print(df_results.to_string(index=False))
+print("\n=======================================================\n")
