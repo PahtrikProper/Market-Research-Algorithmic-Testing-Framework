@@ -9,7 +9,7 @@ This software is **not a trading platform**, does **not provide financial advice
 
 ---
 
-# 🔒 **Important Disclaimer (Mandatory for Compliance)**
+# 🔒 **Important Disclaimer**
 
 * This system is used **solely for the author’s personal market research**.
 * It **does not execute trades for third parties**.
