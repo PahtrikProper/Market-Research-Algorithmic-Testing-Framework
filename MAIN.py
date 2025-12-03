@@ -11,9 +11,8 @@ STARTING_BALANCE = 1_000
 symbols = ["GDX.AX", "GOLD.AX", "NAB.AX", "NDQ.AX"]
 interval = "1d"
 
-# Optimization parameter ranges
-imbalance_range = range(1, 35)          # 1–34
-ema_range = range(5, 161, 5)            # 5–160 step 5
+imbalance_range = range(1, 35)
+ema_range = range(5, 161, 5)
 tp_range = [x / 100 for x in range(3, 41)]  # 3% → 40%
 
 
@@ -61,7 +60,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
 
     data = df.copy()
 
-    # Indicators
     data["ema"] = data["Close"].ewm(span=ema_len).mean()
     data["ema_up"] = data["ema"] > data["ema"].shift(1)
     data["ema_down"] = data["ema"] < data["ema"].shift(1)
@@ -75,6 +73,8 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
     data["tradable"] = data["year"] == 2025
 
     balance = STARTING_BALANCE
+    equity_curve = [balance]
+
     position = 0
     shares = 0
     entry_price = None
@@ -83,12 +83,13 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
     wins = 0
     losses = 0
     win_sizes = []
+    loss_sizes = []
 
     for i in range(imbalance_lookback + 2, len(data)):
         row = data.iloc[i]
         open_, high, low, close = row["Open"], row["High"], row["Low"], row["Close"]
 
-        # =============== ENTRY =====================
+        # ENTRY
         long_cond = (
             low <= row["imb_low"] and
             close > open_ and
@@ -102,37 +103,39 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
             entry_price = close
             shares = balance // entry_price
             if shares <= 0:
+                equity_curve.append(balance)
                 continue
 
             buy_value = entry_price * shares
             buy_fee = commsec_fee(buy_value)
-
             balance -= (buy_value + buy_fee)
+
             tp_price = entry_price * (1 + take_profit_pct)
             position = 1
+            equity_curve.append(balance)
             continue
 
-        # =============== EXIT ======================
+        # EXIT
         if position == 1:
 
-            # TP EXIT
+            # TAKE PROFIT
             if high >= tp_price:
                 exit_price = tp_price
                 sell_value = exit_price * shares
                 sell_fee = commsec_fee(sell_value)
-
                 balance += (sell_value - sell_fee)
 
                 pnl_pct = (exit_price - entry_price) / entry_price * 100
                 wins += 1
                 win_sizes.append(pnl_pct)
 
-                shares = 0
                 position = 0
+                shares = 0
                 entry_price = None
+                equity_curve.append(balance)
                 continue
 
-            # Opposite EXIT
+            # OPPOSITE EXIT
             short_cond = (
                 high >= row["imb_high"] and
                 close < open_ and
@@ -145,7 +148,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 exit_price = close
                 sell_value = exit_price * shares
                 sell_fee = commsec_fee(sell_value)
-
                 balance += (sell_value - sell_fee)
 
                 pnl_pct = (exit_price - entry_price) / entry_price * 100
@@ -155,23 +157,46 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                     win_sizes.append(pnl_pct)
                 else:
                     losses += 1
+                    loss_sizes.append(pnl_pct)
 
-                shares = 0
                 position = 0
+                shares = 0
                 entry_price = None
+                equity_curve.append(balance)
                 continue
 
-    # Final results
+        equity_curve.append(balance)
+
+    # Final stats
     final_balance = balance
     pnl_value = final_balance - STARTING_BALANCE
     pnl_pct = (pnl_value / STARTING_BALANCE) * 100
-    avg_win = np.mean(win_sizes) if win_sizes else 0
 
-    return pnl_pct, pnl_value, final_balance, wins, losses, avg_win
+    avg_win = np.mean(win_sizes) if win_sizes else 0
+    avg_loss = np.mean(loss_sizes) if loss_sizes else 0
+    win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+
+    # Risk/reward ratio
+    rr_ratio = (avg_win / abs(avg_loss)) if avg_loss != 0 else None
+
+    # Sharpe ratio (simple daily % return)
+    returns = pd.Series(equity_curve).pct_change().dropna()
+    sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
+
+    # Drawdown
+    equity_series = pd.Series(equity_curve)
+    roll_max = equity_series.cummax()
+    drawdown = ((equity_series - roll_max) / roll_max).min() * 100
+
+    return (
+        pnl_pct, pnl_value, final_balance,
+        avg_win, avg_loss, win_rate, rr_ratio,
+        sharpe, drawdown, wins, losses
+    )
 
 
 # ===================================================================
-# OPTIMIZE A SINGLE SYMBOL
+# OPTIMIZE
 # ===================================================================
 def optimize_symbol(symbol):
     df = fetch_data(symbol)
@@ -179,7 +204,9 @@ def optimize_symbol(symbol):
 
     for imb, ema, tp in product(imbalance_range, ema_range, tp_range):
 
-        pnl_pct, pnl_value, final_balance, wins, losses, avg_win = run_backtest(df, imb, ema, tp)
+        (pnl_pct, pnl_value, final_balance,
+         avg_win, avg_loss, win_rate, rr_ratio,
+         sharpe, drawdown, wins, losses) = run_backtest(df, imb, ema, tp)
 
         if best is None or pnl_pct > best["pnl_pct"]:
             best = {
@@ -191,6 +218,11 @@ def optimize_symbol(symbol):
                 "pnl_value": pnl_value,
                 "final_balance": final_balance,
                 "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "win_rate": win_rate,
+                "rr_ratio": rr_ratio,
+                "sharpe": sharpe,
+                "drawdown": drawdown,
                 "wins": wins,
                 "losses": losses,
             }
@@ -199,7 +231,7 @@ def optimize_symbol(symbol):
 
 
 # ===================================================================
-# RUN MULTI-SYMBOL OPTIMIZATION
+# RUN ALL SYMBOLS
 # ===================================================================
 results = []
 
@@ -212,11 +244,16 @@ for sym in symbols:
 df_results = pd.DataFrame(results).sort_values("pnl_pct", ascending=False)
 
 # ===================================================================
-# HUMAN READABLE FORMATTING
+# FORMATTING
 # ===================================================================
 df_results["tp_pct"]        = df_results["tp_pct"].map(lambda x: f"{x*100:.2f}%")
 df_results["pnl_pct"]       = df_results["pnl_pct"].map(lambda x: f"{x:.2f}%")
 df_results["avg_win"]       = df_results["avg_win"].map(lambda x: f"{x:.2f}%")
+df_results["avg_loss"]      = df_results["avg_loss"].map(lambda x: f"{x:.2f}%")
+df_results["win_rate"]      = df_results["win_rate"].map(lambda x: f"{x:.2f}%")
+df_results["rr_ratio"]      = df_results["rr_ratio"].map(lambda x: f"{x:.2f}" if x is not None else "N/A")
+df_results["sharpe"]        = df_results["sharpe"].map(lambda x: f"{x:.2f}")
+df_results["drawdown"]      = df_results["drawdown"].map(lambda x: f"{x:.2f}%")
 df_results["pnl_value"]     = df_results["pnl_value"].map(lambda x: f"${x:,.2f}")
 df_results["final_balance"] = df_results["final_balance"].map(lambda x: f"${x:,.2f}")
 
