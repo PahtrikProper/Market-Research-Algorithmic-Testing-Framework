@@ -21,7 +21,6 @@ tp_range = [x / 100 for x in range(3, 41)]  # 3% → 40%
 # COMMSEC BROKERAGE FEE MODEL
 # ===================================================================
 def commsec_fee(trade_value):
-    """Real CommSec brokerage fee model."""
     if trade_value <= 1000:
         return 5.00
     elif trade_value <= 10000:
@@ -29,7 +28,7 @@ def commsec_fee(trade_value):
     elif trade_value <= 25000:
         return 19.95
     else:
-        return trade_value * 0.0012   # 0.12%
+        return trade_value * 0.0012
 
 
 # ===================================================================
@@ -87,7 +86,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
 
     for i in range(imbalance_lookback + 2, len(data)):
         row = data.iloc[i]
-
         open_, high, low, close = row["Open"], row["High"], row["Low"], row["Close"]
 
         # =============== ENTRY =====================
@@ -110,7 +108,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
             buy_fee = commsec_fee(buy_value)
 
             balance -= (buy_value + buy_fee)
-
             tp_price = entry_price * (1 + take_profit_pct)
             position = 1
             continue
@@ -165,11 +162,12 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 continue
 
     # Final results
-    pnl_value = balance - STARTING_BALANCE
+    final_balance = balance
+    pnl_value = final_balance - STARTING_BALANCE
     pnl_pct = (pnl_value / STARTING_BALANCE) * 100
     avg_win = np.mean(win_sizes) if win_sizes else 0
 
-    return pnl_pct, pnl_value, wins, losses, avg_win
+    return pnl_pct, pnl_value, final_balance, wins, losses, avg_win
 
 
 # ===================================================================
@@ -181,7 +179,7 @@ def optimize_symbol(symbol):
 
     for imb, ema, tp in product(imbalance_range, ema_range, tp_range):
 
-        pnl_pct, pnl_value, wins, losses, avg_win = run_backtest(df, imb, ema, tp)
+        pnl_pct, pnl_value, final_balance, wins, losses, avg_win = run_backtest(df, imb, ema, tp)
 
         if best is None or pnl_pct > best["pnl_pct"]:
             best = {
@@ -191,6 +189,7 @@ def optimize_symbol(symbol):
                 "tp_pct": tp,
                 "pnl_pct": pnl_pct,
                 "pnl_value": pnl_value,
+                "final_balance": final_balance,
                 "avg_win": avg_win,
                 "wins": wins,
                 "losses": losses,
@@ -212,18 +211,14 @@ for sym in symbols:
 
 df_results = pd.DataFrame(results).sort_values("pnl_pct", ascending=False)
 
-
 # ===================================================================
 # HUMAN READABLE FORMATTING
 # ===================================================================
-
-# Format percentages correctly
-df_results["tp_pct"]    = df_results["tp_pct"].map(lambda x: f"{x*100:.2f}%")
-df_results["pnl_pct"]   = df_results["pnl_pct"].map(lambda x: f"{x:.2f}%")
-df_results["avg_win"]   = df_results["avg_win"].map(lambda x: f"{x:.2f}%")
-
-# Format currency
-df_results["pnl_value"] = df_results["pnl_value"].map(lambda x: f"${x:,.2f}")
+df_results["tp_pct"]        = df_results["tp_pct"].map(lambda x: f"{x*100:.2f}%")
+df_results["pnl_pct"]       = df_results["pnl_pct"].map(lambda x: f"{x:.2f}%")
+df_results["avg_win"]       = df_results["avg_win"].map(lambda x: f"{x:.2f}%")
+df_results["pnl_value"]     = df_results["pnl_value"].map(lambda x: f"${x:,.2f}")
+df_results["final_balance"] = df_results["final_balance"].map(lambda x: f"${x:,.2f}")
 
 print("\n==================== FINAL RESULTS ====================\n")
 print(df_results.to_string(index=False))
