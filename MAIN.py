@@ -7,7 +7,7 @@ from itertools import product
 # ===================================================================
 # SETTINGS
 # ===================================================================
-STARTING_BALANCE = 100_000
+STARTING_BALANCE = 1_000
 symbols = ["GDX.AX", "GOLD.AX", "NAB.AX", "NDQ.AX"]
 interval = "1d"
 
