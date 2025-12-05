@@ -74,7 +74,7 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
     data["tradable"] = data["year"] == 2025
 
     balance = STARTING_BALANCE
-    equity_curve = []  # FIX: start empty, we will append proper equity each bar
+    equity_curve = []  # fixed: we track real equity each bar
 
     position = 0
     shares = 0
@@ -107,7 +107,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 buy_value = entry_price * shares
                 buy_fee = commsec_fee(buy_value)
                 balance -= (buy_value + buy_fee)
-
                 tp_price = entry_price * (1 + take_profit_pct)
                 position = 1
 
@@ -159,7 +158,7 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                     entry_price = None
 
         # ============================================================
-        # FIX: Mark-to-market equity every bar (REAL equity tracking)
+        # MARK-TO-MARKET EQUITY (fixes drawdown)
         # ============================================================
         if position == 1:
             current_equity = balance + shares * close
@@ -169,20 +168,19 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
         equity_curve.append(current_equity)
 
     # Final stats
-    final_balance = equity_curve[-1]   # FIX: use true equity, not cash balance
+    final_balance = equity_curve[-1]
     pnl_value = final_balance - STARTING_BALANCE
     pnl_pct = (pnl_value / STARTING_BALANCE) * 100
 
     avg_win = np.mean(win_sizes) if win_sizes else 0
     avg_loss = np.mean(loss_sizes) if loss_sizes else 0
     win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
-
     rr_ratio = (avg_win / abs(avg_loss)) if avg_loss != 0 else None
 
     returns = pd.Series(equity_curve).pct_change().dropna()
     sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
 
-    # Drawdown (now correct because equity_curve is correct)
+    # Correct Drawdown
     equity_series = pd.Series(equity_curve)
     roll_max = equity_series.cummax()
     drawdown = ((equity_series - roll_max) / roll_max).min() * 100
@@ -193,6 +191,7 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
         sharpe, drawdown, wins, losses
     )
 
+
 # ===================================================================
 # OPTIMIZE
 # ===================================================================
@@ -200,8 +199,14 @@ def optimize_symbol(symbol):
     df = fetch_data(symbol)
     best = None
 
-    for imb, ema, tp in product(imbalance_range, ema_range, tp_range):
+    total = len(imbalance_range) * len(ema_range) * len(tp_range)
 
+    for imb, ema, tp in tqdm(
+        product(imbalance_range, ema_range, tp_range),
+        total=total,
+        desc=f"Optimizing {symbol}",
+        ncols=80
+    ):
         (pnl_pct, pnl_value, final_balance,
          avg_win, avg_loss, win_rate, rr_ratio,
          sharpe, drawdown, wins, losses) = run_backtest(df, imb, ema, tp)
