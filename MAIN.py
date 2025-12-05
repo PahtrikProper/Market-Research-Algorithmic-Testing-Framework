@@ -8,7 +8,7 @@ from itertools import product
 # SETTINGS
 # ===================================================================
 STARTING_BALANCE = 1_000
-symbols = ["GDX.AX", "GOLD.AX", "NAB.AX", "NDQ.AX"]
+symbols = ["NDQ.AX"]
 interval = "1d"
 
 imbalance_range = range(1, 35)
@@ -73,12 +73,12 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
     data["tradable"] = data["year"] == 2025
 
     balance = STARTING_BALANCE
+    equity_curve = []  # FIX: start empty, we will append proper equity each bar
+
     position = 0
     shares = 0
     entry_price = None
     tp_price = None
-
-    equity_curve = []
 
     wins = 0
     losses = 0
@@ -106,10 +106,11 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 buy_value = entry_price * shares
                 buy_fee = commsec_fee(buy_value)
                 balance -= (buy_value + buy_fee)
+
                 tp_price = entry_price * (1 + take_profit_pct)
                 position = 1
 
-        # EXIT LOGIC
+        # EXIT
         if position == 1:
 
             # TAKE PROFIT
@@ -128,7 +129,7 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 entry_price = None
 
             else:
-                # OPPOSITE EXIT SIGNAL
+                # OPPOSITE EXIT
                 short_cond = (
                     high >= row["imb_high"] and
                     close < open_ and
@@ -144,6 +145,7 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                     balance += (sell_value - sell_fee)
 
                     pnl_pct = (exit_price - entry_price) / entry_price * 100
+
                     if pnl_pct > 0:
                         wins += 1
                         win_sizes.append(pnl_pct)
@@ -155,7 +157,9 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                     shares = 0
                     entry_price = None
 
-        # ========== REAL EQUITY MARK-TO-MARKET ==========
+        # ============================================================
+        # FIX: Mark-to-market equity every bar (REAL equity tracking)
+        # ============================================================
         if position == 1:
             current_equity = balance + shares * close
         else:
@@ -164,19 +168,20 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
         equity_curve.append(current_equity)
 
     # Final stats
-    final_balance = equity_curve[-1]
+    final_balance = equity_curve[-1]   # FIX: use true equity, not cash balance
     pnl_value = final_balance - STARTING_BALANCE
     pnl_pct = (pnl_value / STARTING_BALANCE) * 100
 
     avg_win = np.mean(win_sizes) if win_sizes else 0
     avg_loss = np.mean(loss_sizes) if loss_sizes else 0
     win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+
     rr_ratio = (avg_win / abs(avg_loss)) if avg_loss != 0 else None
 
     returns = pd.Series(equity_curve).pct_change().dropna()
     sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
 
-    # ========== FIXED DRAWDOWN ==========
+    # Drawdown (now correct because equity_curve is correct)
     equity_series = pd.Series(equity_curve)
     roll_max = equity_series.cummax()
     drawdown = ((equity_series - roll_max) / roll_max).min() * 100
