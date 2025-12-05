@@ -73,12 +73,12 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
     data["tradable"] = data["year"] == 2025
 
     balance = STARTING_BALANCE
-    equity_curve = [balance]
-
     position = 0
     shares = 0
     entry_price = None
     tp_price = None
+
+    equity_curve = []
 
     wins = 0
     losses = 0
@@ -102,20 +102,14 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
         if long_cond:
             entry_price = close
             shares = balance // entry_price
-            if shares <= 0:
-                equity_curve.append(balance)
-                continue
+            if shares > 0:
+                buy_value = entry_price * shares
+                buy_fee = commsec_fee(buy_value)
+                balance -= (buy_value + buy_fee)
+                tp_price = entry_price * (1 + take_profit_pct)
+                position = 1
 
-            buy_value = entry_price * shares
-            buy_fee = commsec_fee(buy_value)
-            balance -= (buy_value + buy_fee)
-
-            tp_price = entry_price * (1 + take_profit_pct)
-            position = 1
-            equity_curve.append(balance)
-            continue
-
-        # EXIT
+        # EXIT LOGIC
         if position == 1:
 
             # TAKE PROFIT
@@ -132,58 +126,57 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
                 position = 0
                 shares = 0
                 entry_price = None
-                equity_curve.append(balance)
-                continue
 
-            # OPPOSITE EXIT
-            short_cond = (
-                high >= row["imb_high"] and
-                close < open_ and
-                row["ema_down"] and
-                row["below_ema"] and
-                row["tradable"]
-            )
+            else:
+                # OPPOSITE EXIT SIGNAL
+                short_cond = (
+                    high >= row["imb_high"] and
+                    close < open_ and
+                    row["ema_down"] and
+                    row["below_ema"] and
+                    row["tradable"]
+                )
 
-            if short_cond:
-                exit_price = close
-                sell_value = exit_price * shares
-                sell_fee = commsec_fee(sell_value)
-                balance += (sell_value - sell_fee)
+                if short_cond:
+                    exit_price = close
+                    sell_value = exit_price * shares
+                    sell_fee = commsec_fee(sell_value)
+                    balance += (sell_value - sell_fee)
 
-                pnl_pct = (exit_price - entry_price) / entry_price * 100
+                    pnl_pct = (exit_price - entry_price) / entry_price * 100
+                    if pnl_pct > 0:
+                        wins += 1
+                        win_sizes.append(pnl_pct)
+                    else:
+                        losses += 1
+                        loss_sizes.append(pnl_pct)
 
-                if pnl_pct > 0:
-                    wins += 1
-                    win_sizes.append(pnl_pct)
-                else:
-                    losses += 1
-                    loss_sizes.append(pnl_pct)
+                    position = 0
+                    shares = 0
+                    entry_price = None
 
-                position = 0
-                shares = 0
-                entry_price = None
-                equity_curve.append(balance)
-                continue
+        # ========== REAL EQUITY MARK-TO-MARKET ==========
+        if position == 1:
+            current_equity = balance + shares * close
+        else:
+            current_equity = balance
 
-        equity_curve.append(balance)
+        equity_curve.append(current_equity)
 
     # Final stats
-    final_balance = balance
+    final_balance = equity_curve[-1]
     pnl_value = final_balance - STARTING_BALANCE
     pnl_pct = (pnl_value / STARTING_BALANCE) * 100
 
     avg_win = np.mean(win_sizes) if win_sizes else 0
     avg_loss = np.mean(loss_sizes) if loss_sizes else 0
     win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
-
-    # Risk/reward ratio
     rr_ratio = (avg_win / abs(avg_loss)) if avg_loss != 0 else None
 
-    # Sharpe ratio (simple daily % return)
     returns = pd.Series(equity_curve).pct_change().dropna()
     sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
 
-    # Drawdown
+    # ========== FIXED DRAWDOWN ==========
     equity_series = pd.Series(equity_curve)
     roll_max = equity_series.cummax()
     drawdown = ((equity_series - roll_max) / roll_max).min() * 100
@@ -193,7 +186,6 @@ def run_backtest(df, imbalance_lookback, ema_len, take_profit_pct):
         avg_win, avg_loss, win_rate, rr_ratio,
         sharpe, drawdown, wins, losses
     )
-
 
 # ===================================================================
 # OPTIMIZE
