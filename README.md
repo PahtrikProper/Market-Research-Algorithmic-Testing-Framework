@@ -1,5 +1,7 @@
 # Market-Research-Algorithmic-Testing-Framework
-<img width="939" height="201" alt="Screenshot 2025-12-03 at 11 29 52 PM" src="https://github.com/user-attachments/assets/d9fce387-e12f-44a4-93ad-aa5ec105d48f" />
+
+<img width="927" height="172" alt="Screenshot 2025-12-05 at 7 47 05 PM" src="https://github.com/user-attachments/assets/f4272560-b81d-46bd-bac6-1e709d0d3d13" />
+
 
 ## **Purpose**
 
