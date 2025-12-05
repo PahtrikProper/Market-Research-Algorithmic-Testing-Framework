@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from itertools import product
+from tqdm import tqdm
 
 # ===================================================================
 # SETTINGS
